@@ -20,18 +20,21 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.devicelocunlock/controls"
-    private val DEVICE_CHANNEL = "com.example.smartpay/device"
+    private val DEVICE_CHANNEL = "com.example.devicelocunlock/device"
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        // ─── Control Channel ───
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "lockDevice" -> {
                         val success = lockDevice()
                         result.success(success)
+                    }
+                    "unlockDevice" -> {
+                        // Native তে আনলক করার জন্য কোনো নির্দিষ্ট কাজ নেই, তবে UI আপডেট হবে
+                        result.success(true)
                     }
                     "isAdminActive" -> {
                         val active = isDeviceAdminActive()
@@ -51,17 +54,11 @@ class MainActivity : FlutterActivity() {
                             result.error("ERROR", "Package name not provided", null)
                         }
                     }
-                    "getDeviceId" -> {
-                        val deviceId = getAndroidDeviceId()
-                        result.success(deviceId)
-                    }
-                    else -> {
-                        result.notImplemented()
-                    }
+                    "getDeviceId" -> result.success(getAndroidDeviceId())
+                    else -> result.notImplemented()
                 }
             }
 
-        // ─── Device Info Channel ───
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -70,65 +67,69 @@ class MainActivity : FlutterActivity() {
                         result.success(info)
                     }
                     "getIMEI" -> {
-                        val imei = getRealDeviceIMEI()
-                        result.success(imei)
+                        result.success(getGeneratedIMEI())
                     }
-                    "getDeviceId" -> {
-                        val deviceId = getAndroidDeviceId()
-                        result.success(deviceId)
-                    }
-                    "getBatteryLevel" -> {
-                        val battery = getBatteryLevel()
-                        result.success(battery)
-                    }
-                    "getStorageInfo" -> {
-                        val storage = getStorageInfo()
-                        result.success(storage)
-                    }
-                    "getAndroidVersion" -> {
-                        val version = getAndroidVersion()
-                        result.success(version)
-                    }
-                    "getDeviceModel" -> {
-                        val model = getDeviceModel()
-                        result.success(model)
-                    }
-                    else -> {
-                        result.notImplemented()
-                    }
+                    "getDeviceId" -> result.success(getAndroidDeviceId())
+                    "getSerialNumber" -> result.success(getGeneratedSerial())
+                    "getBatteryLevel" -> result.success(getBatteryLevel())
+                    "getStorageInfo" -> result.success(getStorageInfo())
+                    "getAndroidVersion" -> result.success(getAndroidVersion())
+                    "getDeviceModel" -> result.success(getDeviceModel())
+                    else -> result.notImplemented()
                 }
             }
     }
 
-    // ─── Get All Device Info ───
+    // Android ID থেকে Serial Number তৈরি
+    private fun getGeneratedSerial(): String {
+        val androidId = getAndroidDeviceId()
+        val digits = androidId.filter { it.isDigit() }
+        val base = if (digits.length >= 15) digits.substring(0, 15) else digits.padEnd(15, '0')
+        return "9$base".take(15)
+    }
+
+    // Android ID থেকে imei2 তৈরি
+    private fun getGeneratedIMEI2(): String {
+        val androidId = getAndroidDeviceId()
+        val digits = androidId.filter { it.isDigit() }
+        val base = if (digits.length >= 15) digits.substring(0, 15) else digits.padEnd(15, '0')
+        return base.dropLast(1) + "1"
+    }
+
+    private fun getGeneratedIMEI(): String {
+        val androidId = getAndroidDeviceId()
+        val digits = androidId.filter { it.isDigit() }
+        return if (digits.length >= 15) digits.substring(0, 15) else digits.padEnd(15, '0')
+    }
+
     private fun getDeviceInfo(): Map<String, String> {
         return mapOf(
             "model" to getDeviceModel(),
-            "imei" to getRealDeviceIMEI(),
+            "imei" to getGeneratedIMEI(),
+            "imei2" to getGeneratedIMEI2(),
             "androidVersion" to getAndroidVersion(),
             "batteryLevel" to getBatteryLevel(),
             "storageUsed" to getStorageInfo(),
             "deviceId" to getAndroidDeviceId(),
+            "serialNumber" to getGeneratedSerial(),
             "manufacturer" to Build.MANUFACTURER,
             "brand" to Build.BRAND,
             "sdkInt" to Build.VERSION.SDK_INT.toString(),
         )
     }
 
-    private fun getDeviceModel(): String {
+    private fun getAndroidDeviceId(): String {
         return try {
-            "${Build.MANUFACTURER} ${Build.MODEL}"
-        } catch (e: Exception) {
-            "Unknown Model"
-        }
+            Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "UNKNOWN_DEVICE"
+        } catch (e: Exception) { "UNKNOWN_DEVICE" }
+    }
+
+    private fun getDeviceModel(): String {
+        return try { "${Build.MANUFACTURER} ${Build.MODEL}" } catch (e: Exception) { "Unknown Model" }
     }
 
     private fun getAndroidVersion(): String {
-        return try {
-            "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
-        } catch (e: Exception) {
-            "Unknown Version"
-        }
+        return try { "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})" } catch (e: Exception) { "Unknown Version" }
     }
 
     private fun getBatteryLevel(): String {
@@ -136,9 +137,7 @@ class MainActivity : FlutterActivity() {
             val batteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
             val level = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
             "$level%"
-        } catch (e: Exception) {
-            "N/A"
-        }
+        } catch (e: Exception) { "N/A" }
     }
 
     private fun getStorageInfo(): String {
@@ -151,9 +150,7 @@ class MainActivity : FlutterActivity() {
             val availableSize = availableBlocks * blockSize
             val usedSize = totalSize - availableSize
             "${formatSize(usedSize)} / ${formatSize(totalSize)}"
-        } catch (e: Exception) {
-            "N/A"
-        }
+        } catch (e: Exception) { "N/A" }
     }
 
     private fun formatSize(size: Long): String {
@@ -165,44 +162,10 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun getRealDeviceIMEI(): String {
-        return try {
-            val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                getDeviceIdentifier()
-            } else {
-                if (ActivityCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.READ_PHONE_STATE
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    telephonyManager.imei ?: getDeviceIdentifier()
-                } else {
-                    getDeviceIdentifier()
-                }
-            }
-        } catch (e: Exception) {
-            getDeviceIdentifier()
-        }
-    }
-
-    private fun getDeviceIdentifier(): String {
-        return try {
-            Settings.Secure.getString(
-                contentResolver,
-                Settings.Secure.ANDROID_ID
-            ) ?: "UNKNOWN_DEVICE"
-        } catch (e: Exception) {
-            "UNKNOWN_DEVICE"
-        }
-    }
-
-    // ─── Lock Device ───
     private fun lockDevice(): Boolean {
         return try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
-
             if (dpm.isAdminActive(adminComponent)) {
                 dpm.lockNow()
                 Toast.makeText(this, "🔒 Device Locked!", Toast.LENGTH_SHORT).show()
@@ -211,10 +174,7 @@ class MainActivity : FlutterActivity() {
                 Toast.makeText(this, "⚠️ Admin not active! Please activate first.", Toast.LENGTH_LONG).show()
                 false
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
+        } catch (e: Exception) { e.printStackTrace(); false }
     }
 
     private fun isDeviceAdminActive(): Boolean {
@@ -223,11 +183,9 @@ class MainActivity : FlutterActivity() {
         return dpm.isAdminActive(adminComponent)
     }
 
-    // ─── Activate Admin ───
     private fun activateDeviceAdmin() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
-
         if (!dpm.isAdminActive(adminComponent)) {
             val intent = android.content.Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
             intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
@@ -241,25 +199,11 @@ class MainActivity : FlutterActivity() {
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
-
             if (dpm.isAdminActive(adminComponent)) {
                 dpm.setUninstallBlocked(adminComponent, packageName, block)
                 val message = if (block) "Uninstall blocked" else "Uninstall allowed"
                 Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun getAndroidDeviceId(): String {
-        return try {
-            Settings.Secure.getString(
-                contentResolver,
-                Settings.Secure.ANDROID_ID
-            ) ?: "UNKNOWN_DEVICE"
-        } catch (e: Exception) {
-            "UNKNOWN_DEVICE"
-        }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 }

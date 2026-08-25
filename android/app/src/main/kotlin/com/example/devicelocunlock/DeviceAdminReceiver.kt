@@ -14,6 +14,6 @@ class DeviceAdminReceiver : DeviceAdminReceiver() {
 
     override fun onDisabled(context: Context, intent: Intent) {
         super.onDisabled(context, intent)
-        Toast.makeText(context, " Device Admin Deactivated", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Device Admin Deactivated", Toast.LENGTH_LONG).show()
     }
 }

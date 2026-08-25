@@ -1,7 +1,9 @@
 import 'package:devicelocunlock/core/routes/Routes_name.dart';
+import 'package:devicelocunlock/services/api_service.dart';
+import 'package:devicelocunlock/services/device_control_service.dart';
+import 'package:devicelocunlock/services/shared_preferences_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -11,82 +13,53 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _imeiController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _imei1Controller = TextEditingController();
+  final TextEditingController _imei2Controller = TextEditingController();
 
-  final FocusNode _imeiFocusNode = FocusNode();
-  final FocusNode _passwordFocusNode = FocusNode();
+  final FocusNode _imei1FocusNode = FocusNode();
+  final FocusNode _imei2FocusNode = FocusNode();
 
   bool _isLoading = false;
-  bool _obscurePassword = true;
-  bool _rememberMe = false;
   String? _errorMessage;
   bool _isImeiLoading = false;
 
+  // Auto-detected device details (hidden in UI)
+  Map<String, dynamic> _deviceInfo = {};
+
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  final ApiService _apiService = ApiService();
 
   @override
   void initState() {
     super.initState();
-    _loadSavedCredentials();
-    _autoFillIMEI();
+    _fetchDeviceInfo();
   }
 
   @override
   void dispose() {
-    _imeiController.dispose();
-    _passwordController.dispose();
-    _imeiFocusNode.dispose();
-    _passwordFocusNode.dispose();
+    _imei1Controller.dispose();
+    _imei2Controller.dispose();
+    _imei1FocusNode.dispose();
+    _imei2FocusNode.dispose();
     super.dispose();
   }
 
-  Future<void> _autoFillIMEI() async {
+  Future<void> _fetchDeviceInfo() async {
     setState(() {
       _isImeiLoading = true;
     });
 
     try {
-      const platform = MethodChannel('com.example.smartpay/device');
-      final String imei = await platform.invokeMethod('getIMEI');
-
-      if (imei.isNotEmpty &&
-          imei != 'UNKNOWN_DEVICE' &&
-          imei != 'UNKNOWN_IMEI') {
-        setState(() {
-          _imeiController.text = imei;
-        });
-      } else {
-        final String deviceId = await platform.invokeMethod('getDeviceId');
-        if (deviceId.isNotEmpty && deviceId != 'UNKNOWN_DEVICE') {
-          setState(() {
-            _imeiController.text = deviceId;
-          });
-        }
-      }
+      _deviceInfo = await DeviceControlService.instance.getFullDeviceInfo();
+      debugPrint('✅ [LOGIN] Device Info fetched successfully: $_deviceInfo');
     } catch (e) {
-      debugPrint('Error getting IMEI: $e');
+      debugPrint('❌ [LOGIN] Error getting device details: $e');
     } finally {
       if (mounted) {
         setState(() {
           _isImeiLoading = false;
         });
       }
-    }
-  }
-
-  Future<void> _loadSavedCredentials() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final password = prefs.getString('saved_password');
-      final remember = prefs.getBool('remember_me') ?? false;
-
-      setState(() {
-        if (password != null) _passwordController.text = password;
-        _rememberMe = remember;
-      });
-    } catch (e) {
-      debugPrint('Error loading credentials: $e');
     }
   }
 
@@ -99,30 +72,69 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final String imei = _imeiController.text.trim();
-      final String password = _passwordController.text.trim();
+      final String inputImei1 = _imei1Controller.text.trim();
+      final String inputImei2 = _imei2Controller.text.trim();
+      final String? fcmToken = SharedPreferencesService.getFCMToken();
 
-      await Future.delayed(const Duration(seconds: 2));
+      debugPrint('-----------------------');
+      debugPrint('🔐 [LOGIN] Attempting to Login...');
+      debugPrint('📱 [LOGIN] User Input IMEI 1: $inputImei1');
+      debugPrint('📱 [LOGIN] User Input IMEI 2: $inputImei2');
+      debugPrint('-----------------------');
 
-      if (imei.isNotEmpty && password.isNotEmpty) {
-        if (_rememberMe) {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('saved_imei', imei);
-          await prefs.setString('saved_password', password);
-          await prefs.setBool('remember_me', true);
-        }
+      final trackData = {
+        "imei": inputImei1,
+        "imei2": inputImei2,
+        "serialNumber": _deviceInfo['serialNumber'] ?? "",
+        "batteryLevel": int.tryParse(_deviceInfo['batteryLevel']?.toString().replaceAll('%', '') ?? '85') ?? 85,
+        "brand": _deviceInfo['brand'] ?? "Unknown",
+        "model": _deviceInfo['model'] ?? "Unknown",
+        "osVersion": _deviceInfo['osVersion'] ?? _deviceInfo['androidVersion'] ?? "Unknown",
+        "appVersion": "1.0.0",
+        "fcmToken": fcmToken ?? "NO_TOKEN"
+      };
 
-        if (mounted) {
-          Navigator.pushReplacementNamed(context, RouteName.homeScreen);
+      debugPrint('📦 [LOGIN] Sending Tracking Data to API: $trackData');
+      final response = await _apiService.trackDevice(trackData);
+
+      if (response != null && response['success'] == true) {
+        final data = response['data'];
+        final bool isLocked = data['isLocked'] ?? false;
+
+        debugPrint('-----------------------');
+        debugPrint('🎉 [LOGIN] Login Successful!');
+        debugPrint('🔒 [LOGIN] isLocked: $isLocked');
+        debugPrint('📝 [LOGIN] lockReason: ${data['lockReason']}');
+        debugPrint('👤 [LOGIN] customerName: ${data['customerName']}');
+        debugPrint('-----------------------');
+
+        await SharedPreferencesService.setIMEI(inputImei1);
+        await SharedPreferencesService.saveLockData(data);
+
+        if (isLocked) {
+          debugPrint('🔒 [LOGIN] Device is LOCKED from server. Locking device...');
+          await DeviceControlService.instance.lockDevice();
+          setState(() {
+            _errorMessage = 'Device is Locked: ${data['lockReason'] ?? 'Unknown Reason'}';
+          });
+        } else {
+          debugPrint('🔓 [LOGIN] Device is UNLOCKED. Proceeding to Home...');
+          await DeviceControlService.instance.unlockDevice();
+          DeviceControlService.instance.startLockStatusSync();
+          if (mounted) {
+            Navigator.pushReplacementNamed(context, RouteName.homeScreen);
+          }
         }
       } else {
+        debugPrint('❌ [LOGIN] API Failed or returned null.');
         setState(() {
-          _errorMessage = 'Invalid IMEI or Password. Please try again.';
+          _errorMessage = 'Connection failed. Check your IMEI and Network.';
         });
       }
     } catch (e) {
+      debugPrint('❌ [LOGIN] Exception caught: $e');
       setState(() {
-        _errorMessage = 'Login failed: $e';
+        _errorMessage = 'Login error: $e';
       });
     } finally {
       if (mounted) {
@@ -154,17 +166,11 @@ class _LoginScreenState extends State<LoginScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const SizedBox(height: 20),
-
                     _buildLogo(),
-
                     const SizedBox(height: 40),
-
                     _buildLoginCard(),
-
                     const SizedBox(height: 30),
-
                     _buildFooter(),
-
                     const SizedBox(height: 20),
                   ],
                 ),
@@ -180,9 +186,8 @@ class _LoginScreenState extends State<LoginScreen> {
     return Column(
       children: [
         Image.asset("assets/icons/logo.png", color: Colors.white),
-
         const SizedBox(height: 6),
-        Text(
+        const Text(
           'Mobile Lock/Unlock ',
           style: TextStyle(
             color: Colors.white,
@@ -192,8 +197,7 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
         const SizedBox(height: 6),
-
-        Text(
+        const Text(
           'Management System',
           style: TextStyle(
             color: Colors.white,
@@ -223,7 +227,6 @@ class _LoginScreenState extends State<LoginScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Error Message
           if (_errorMessage != null)
             Container(
               padding: const EdgeInsets.all(10),
@@ -235,11 +238,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.error_outline,
-                    color: Colors.red.shade700,
-                    size: 18,
-                  ),
+                  Icon(Icons.error_outline, color: Colors.red.shade700, size: 18),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -254,122 +253,42 @@ class _LoginScreenState extends State<LoginScreen> {
                 ],
               ),
             ),
-
-          // ─── IMEI Field ───
-          _buildIMEIField(),
-
-          const SizedBox(height: 18),
-
-          // ─── Password Field ───
-          _buildPasswordField(),
-
-          const SizedBox(height: 14),
-
-          // ─── Remember Me ───
-          _buildOptionsRow(),
-
-          const SizedBox(height: 28),
-
-          // ─── Login Button ───
+          _buildIMEIField(
+            controller: _imei1Controller,
+            focusNode: _imei1FocusNode,
+            label: 'IMEI 1 (Primary)',
+            hint: 'Enter IMEI 1 (Dial *#06#)',
+            onFieldSubmitted: (_) => _imei2FocusNode.requestFocus(),
+          ),
+          const SizedBox(height: 16),
+          _buildIMEIField(
+            controller: _imei2Controller,
+            focusNode: _imei2FocusNode,
+            label: 'IMEI 2 (Secondary)',
+            hint: 'Enter IMEI 2 (Dial *#06#)',
+            onFieldSubmitted: (_) => _login(),
+          ),
+          const SizedBox(height: 24),
           _buildLoginButton(),
-
           const SizedBox(height: 12),
-
-          // ─── Device Info ───
           _buildDeviceInfo(),
         ],
       ),
     );
   }
 
-  Widget _buildIMEIField() {
+  Widget _buildIMEIField({
+    required TextEditingController controller,
+    required FocusNode focusNode,
+    required String label,
+    required String hint,
+    required void Function(String) onFieldSubmitted,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            const Text(
-              'IMEI Number',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF1A1A1A),
-              ),
-            ),
-            const SizedBox(width: 8),
-            if (_isImeiLoading)
-              const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Color(0xFF1A6FB0),
-                ),
-              ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        TextFormField(
-          controller: _imeiController,
-          focusNode: _imeiFocusNode,
-          keyboardType: TextInputType.number,
-          inputFormatters: [
-            FilteringTextInputFormatter.digitsOnly,
-            LengthLimitingTextInputFormatter(15),
-          ],
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
-            color: Color(0xFF1A1A1A),
-          ),
-          decoration: InputDecoration(
-            hintText: 'Enter 15-digit IMEI number',
-            hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 14),
-            prefixIcon: const Icon(
-              Icons.phone_android,
-              color: Color(0xFF1A6FB0),
-              size: 22,
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(color: Colors.grey.shade300),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(color: Colors.grey.shade300),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: const BorderSide(
-                color: Color(0xFF1A6FB0),
-                width: 1.5,
-              ),
-            ),
-            filled: true,
-            fillColor: Colors.grey.shade50,
-            contentPadding: const EdgeInsets.symmetric(vertical: 14),
-          ),
-          validator: (value) {
-            if (value == null || value.isEmpty) {
-              return 'Please enter IMEI number';
-            }
-            if (value.length < 10) {
-              return 'Invalid IMEI number';
-            }
-            return null;
-          },
-          onFieldSubmitted: (_) => _passwordFocusNode.requestFocus(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPasswordField() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Password',
+        Text(
+          label,
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w600,
@@ -378,116 +297,27 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
         const SizedBox(height: 8),
         TextFormField(
-          controller: _passwordController,
-          focusNode: _passwordFocusNode,
-          obscureText: _obscurePassword,
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
-            color: Color(0xFF1A1A1A),
-          ),
+          controller: controller,
+          focusNode: focusNode,
+          keyboardType: TextInputType.number,
+          inputFormatters: [
+            FilteringTextInputFormatter.digitsOnly,
+            LengthLimitingTextInputFormatter(15),
+          ],
           decoration: InputDecoration(
-            hintText: 'Enter your password',
-            hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 14),
-            prefixIcon: const Icon(
-              Icons.lock_outline,
-              color: Color(0xFF1A6FB0),
-              size: 22,
-            ),
-            suffixIcon: IconButton(
-              icon: Icon(
-                _obscurePassword ? Icons.visibility_off : Icons.visibility,
-                color: Colors.grey.shade500,
-                size: 20,
-              ),
-              onPressed: () {
-                setState(() {
-                  _obscurePassword = !_obscurePassword;
-                });
-              },
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(color: Colors.grey.shade300),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(color: Colors.grey.shade300),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: const BorderSide(
-                color: Color(0xFF1A6FB0),
-                width: 1.5,
-              ),
-            ),
+            hintText: hint,
+            prefixIcon: const Icon(Icons.phone_android, color: Color(0xFF1A6FB0), size: 22),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
             filled: true,
             fillColor: Colors.grey.shade50,
-            contentPadding: const EdgeInsets.symmetric(vertical: 14),
           ),
           validator: (value) {
-            if (value == null || value.isEmpty) {
-              return 'Please enter password';
-            }
-            if (value.length < 6) {
-              return 'Password must be at least 6 characters';
-            }
+            if (value == null || value.isEmpty) return 'Please enter IMEI';
+            if (value.length != 15) return 'IMEI must be exactly 15 digits';
+            if (int.tryParse(value) == null) return 'IMEI must be numeric';
             return null;
           },
-          onFieldSubmitted: (_) => _login(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildOptionsRow() {
-    return Row(
-      children: [
-        SizedBox(
-          height: 40,
-          child: Row(
-            children: [
-              Checkbox(
-                value: _rememberMe,
-                onChanged: (value) {
-                  setState(() {
-                    _rememberMe = value ?? false;
-                  });
-                },
-                activeColor: const Color(0xFF1A6FB0),
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-              const Text(
-                'Remember me',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Color(0xFF555555),
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const Spacer(),
-        TextButton(
-          onPressed: _showForgotPasswordDialog,
-          style: TextButton.styleFrom(
-            padding: EdgeInsets.zero,
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          child: const Text(
-            'Forgot Password?',
-            style: TextStyle(
-              color: Color(0xFF1A6FB0),
-              fontWeight: FontWeight.w600,
-              fontSize: 14,
-            ),
-          ),
+          onFieldSubmitted: onFieldSubmitted,
         ),
       ],
     );
@@ -500,49 +330,64 @@ class _LoginScreenState extends State<LoginScreen> {
         onPressed: _isLoading ? null : _login,
         style: ElevatedButton.styleFrom(
           backgroundColor: const Color(0xFF1A6FB0),
-          foregroundColor: Colors.white,
           padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-          elevation: 0,
-          minimumSize: const Size(double.infinity, 48),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ),
         child: _isLoading
-            ? const SizedBox(
-                height: 22,
-                width: 22,
-                child: CircularProgressIndicator(
-                  color: Colors.white,
-                  strokeWidth: 2.5,
-                ),
-              )
-            : const Text(
-                'LOGIN',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.5,
-                ),
-              ),
+            ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5))
+            : const Text('Continue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 1.5, color: Colors.white)),
       ),
     );
   }
 
   Widget _buildDeviceInfo() {
+    String serial = _deviceInfo['serialNumber'] ?? 'N/A';
+    String imei2 = _deviceInfo['imei2'] ?? 'N/A';
+    String brand = _deviceInfo['brand'] ?? 'N/A';
+    String model = _deviceInfo['model'] ?? 'N/A';
+    String os = _deviceInfo['osVersion'] ?? _deviceInfo['androidVersion'] ?? 'N/A';
+    String battery = _deviceInfo['batteryLevel'] ?? 'N/A';
+
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.info_outline, size: 13, color: Colors.grey.shade400),
-          const SizedBox(width: 4),
-          Text(
-            'IMEI will be auto-detected from your device',
-            style: TextStyle(
-              fontSize: 11,
-              color: Colors.grey.shade400,
-              fontWeight: FontWeight.w400,
+          const Text(
+            'Device Info (Auto-Detected)',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF1A1A1A)),
+          ),
+          const SizedBox(height: 6),
+          _buildInfoRow('serialNumber', serial),
+          _buildInfoRow('imei2', imei2),
+          _buildInfoRow('brand', brand),
+          _buildInfoRow('model', model),
+          _buildInfoRow('osVersion', os),
+          _buildInfoRow('batteryLevel', battery),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          Flexible(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 11, color: Colors.black87, fontWeight: FontWeight.w500),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -551,116 +396,10 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Widget _buildFooter() {
-    return Column(
+    return const Column(
       children: [
-        Text(
-          '© 2024 SmartPay. All rights reserved.',
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.5),
-            fontSize: 12,
-            fontWeight: FontWeight.w400,
-            letterSpacing: 0.3,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              'Secure',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.35),
-                fontSize: 11,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 0.5,
-              ),
-            ),
-            Text(
-              ' · ',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.2),
-                fontSize: 11,
-              ),
-            ),
-            Text(
-              'Remote',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.35),
-                fontSize: 11,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 0.5,
-              ),
-            ),
-            Text(
-              ' · ',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.2),
-                fontSize: 11,
-              ),
-            ),
-            Text(
-              'Reliable',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.35),
-                fontSize: 11,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ],
-        ),
+        Text('© 2024 SmartPay. All rights reserved.', style: TextStyle(color: Colors.white54, fontSize: 12)),
       ],
-    );
-  }
-
-  void _showForgotPasswordDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text('Reset Password'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Enter your registered IMEI to reset password',
-              style: TextStyle(fontSize: 14),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              decoration: InputDecoration(
-                hintText: 'Enter IMEI number',
-                prefixIcon: const Icon(Icons.phone_android),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Password reset link sent!'),
-                  backgroundColor: Colors.green,
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF1A6FB0),
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Send Reset'),
-          ),
-        ],
-      ),
     );
   }
 }
