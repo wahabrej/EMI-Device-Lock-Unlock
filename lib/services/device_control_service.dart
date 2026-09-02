@@ -5,38 +5,29 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class DeviceControlService extends ChangeNotifier {
-  static final DeviceControlService _instance =
-  DeviceControlService._internal();
+  static final DeviceControlService _instance = DeviceControlService._internal();
   static DeviceControlService get instance => _instance;
   DeviceControlService._internal();
 
   factory DeviceControlService() => _instance;
 
-  static const MethodChannel _controlsChannel = MethodChannel(
-    'com.example.devicelocunlock/controls',
-  );
-  static const MethodChannel _deviceInfoChannel = MethodChannel(
-    'com.example.devicelocunlock/device',
-  );
+  static const MethodChannel _controlsChannel = MethodChannel('com.example.devicelocunlock/controls');
+  static const MethodChannel _deviceInfoChannel = MethodChannel('com.example.devicelocunlock/device');
 
   Timer? _syncTimer;
   final ApiService _apiService = ApiService();
 
   bool _isLocked = false;
   String _lockReason = "";
+  DateTime? _lastManualActionTime;
 
   bool get isLocked => _isLocked;
   String get lockReason => _lockReason;
 
-  @override
-  void dispose() {
-    stopLockStatusSync();
-    super.dispose();
-  }
-
   Future<void> init() async {
     _isLocked = SharedPreferencesService.isDeviceLocked();
     _lockReason = SharedPreferencesService.getLockReason();
+    debugPrint('🏁 [Service] Initialized. Current local status: $_isLocked');
 
     await getDeviceId();
     await checkAdminStatus();
@@ -49,31 +40,9 @@ class DeviceControlService extends ChangeNotifier {
 
   void startLockStatusSync() {
     _syncTimer?.cancel();
-
-    debugPrint('🔄 [Sync] Timer শুরু হচ্ছে...');
-    debugPrint('⏱️ [Sync] প্রথম চেক ১০ সেকেন্ড পর, তারপর প্রতি ১০ সেকেন্ড পরপর');
-
-    // প্রথম চেক ১০ সেকেন্ড পর
-    Future.delayed(const Duration(seconds: 5), () {
-      syncWithServer();
-    });
-
-    // তারপর প্রতি ১০ সেকেন্ড পর পর চেক
-    _syncTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-      debugPrint('⏰ [Sync] ১০ সেকেন্ড পার হয়েছে, চেক করা হচ্ছে...');
-      await syncWithServer();
-    });
-  }
-
-  //  নতুন মেথড - সরাসরি চেক শুরু করার জন্য
-  Future<void> startSyncImmediately() async {
-    _syncTimer?.cancel();
-    debugPrint('🔄 [Sync] সাথে সাথেই চেক শুরু করা হচ্ছে...');
-    await syncWithServer();
-
-    // প্রতি ১০ সেকেন্ড পর পর চেক
+    debugPrint('🔄 [Sync] Starting background sync...');
+    syncWithServer();
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
-      debugPrint('⏰ [Sync] ১০ সেকেন্ড পার হয়েছে, চেক করা হচ্ছে...');
       await syncWithServer();
     });
   }
@@ -81,133 +50,118 @@ class DeviceControlService extends ChangeNotifier {
   void stopLockStatusSync() {
     _syncTimer?.cancel();
     _syncTimer = null;
-    debugPrint('⏹️ [Sync] Timer বন্ধ করা হয়েছে');
-  }
-
-  // ম্যানুয়ালি চেক করার জন্য
-  Future<void> manualSync() async {
-    debugPrint('🔄 [Sync] ম্যানুয়ালি চেক করা হচ্ছে...');
-    await syncWithServer();
   }
 
   Future<void> syncWithServer() async {
     final imei = SharedPreferencesService.getIMEI();
-    if (imei.isEmpty) {
-      debugPrint('⚠️ [Sync] IMEI পাওয়া যায়নি, চেক বাদ দেওয়া হচ্ছে');
+    if (imei.isEmpty) return;
+
+    if (_lastManualActionTime != null && 
+        DateTime.now().difference(_lastManualActionTime!).inSeconds < 60) {
       return;
     }
 
-    debugPrint('🔍 [Sync] Lock Status চেক করা হচ্ছে (IMEI: $imei)');
-    final response = await _apiService.getLockStatus(imei);
+    try {
+      final response = await _apiService.getLockStatus(imei);
+      if (response != null && response['success'] == true) {
+        final data = response['data'];
+        if (data == null) return;
 
-    if (response != null && response['success'] == true) {
-      final data = response['data'];
-      final bool serverLockStatus = data['isLocked'] ?? false;
-      final String serverLockReason = data['lockReason'] ?? "";
+        final dynamic rawStatus = data['isLocked'] ?? data['is_locked'];
+        bool serverLockStatus = false;
+        if (rawStatus is bool) serverLockStatus = rawStatus;
+        else if (rawStatus is int) serverLockStatus = rawStatus == 1;
+        else if (rawStatus is String) serverLockStatus = rawStatus.toLowerCase() == 'true' || rawStatus == '1';
 
-      debugPrint('📊 [Sync] Server Response: isLocked=$serverLockStatus, reason=$serverLockReason');
-
-      // SharedPreferences এ সেভ করা
-      await SharedPreferencesService.saveLockData(data);
-      _lockReason = serverLockReason;
-
-      if (serverLockStatus) {
-        debugPrint('🔒 [Sync] Backend থেকে LOCKED স্ট্যাটাস এসেছে!');
-        await lockDevice();
-      } else {
-        debugPrint('🔓 [Sync] Backend থেকে UNLOCKED স্ট্যাটাস এসেছে!');
-        await unlockDevice();
+        if (serverLockStatus != _isLocked) {
+          if (serverLockStatus) {
+            debugPrint('🔒 [Sync] Server requested LOCK');
+            await _executeLock();
+          } else {
+            debugPrint('🔓 [Sync] Server requested UNLOCK');
+            await _executeUnlock();
+          }
+        }
+        
+        await SharedPreferencesService.saveLockData(data);
+        _lockReason = data['lockReason']?.toString() ?? "";
       }
-    } else {
-      debugPrint('❌ [Sync] API কল failed বা সঠিক রেসপন্স আসেনি');
+    } catch (e) {
+      debugPrint('❌ [Sync] Error: $e');
     }
   }
 
-  Future<bool> lockDevice() async {
+  Future<bool> _executeLock() async {
     try {
-      debugPrint('🔒 [Control] Device লক করা হচ্ছে...');
-      final bool result = await _controlsChannel.invokeMethod('lockDevice');
-      _isLocked = true;
+      // ✅ ক্রাশের রিস্ক এড়াতে আগে স্ট্যাটাস সেভ করা হচ্ছে
       await SharedPreferencesService.setDeviceLocked(true);
-      notifyListeners(); // UI update
-      debugPrint('✅ [Control] Device লক হয়েছে!');
-      return result;
-    } on PlatformException catch (e) {
-      debugPrint('❌ [Control] লক করতে ব্যর্থ: ${e.message}');
+      _isLocked = true;
+      notifyListeners();
+
+      await _controlsChannel.invokeMethod('lockDevice');
+      debugPrint('✅ [Device] Locked via Service');
+      return true;
+    } catch (e) {
       return false;
     }
   }
 
-  Future<bool> unlockDevice() async {
-    debugPrint('🔓 [Control] Device আনলক করা হচ্ছে...');
+  Future<bool> _executeUnlock() async {
     try {
+      await SharedPreferencesService.setDeviceLocked(false);
+      _isLocked = false;
+      notifyListeners();
+
       await _controlsChannel.invokeMethod('unlockDevice');
+      debugPrint('✅ [Device] Unlocked via Service');
+      return true;
     } catch (e) {
-      debugPrint('⚠️ [Control] আনলক করতে সমস্যা: $e');
-    }
-
-    _isLocked = false;
-    await SharedPreferencesService.setDeviceLocked(false);
-    notifyListeners(); // UI update
-    debugPrint('✅ [Control] Device আনলক হয়েছে!');
-    return true;
-  }
-
-  Future<bool> isDeviceLocked() async {
-    _isLocked = SharedPreferencesService.isDeviceLocked();
-    return _isLocked;
-  }
-
-  // গুরুত্বপূর্ণ: API তে পাঠানোর জন্য সব ডিভাইস ইনফো
-  Future<Map<String, dynamic>> getFullDeviceInfo() async {
-    try {
-      final Map<dynamic, dynamic>? info = await _deviceInfoChannel.invokeMethod(
-        'getDeviceInfo',
-      );
-      return Map<String, dynamic>.from(info ?? {});
-    } catch (e) {
-      debugPrint('❌ [Device] ডিভাইস ইনফো পেতে ব্যর্থ: $e');
-      return {};
+      return false;
     }
   }
 
-  Future<String> getDeviceId() async {
-    try {
-      final String deviceId = await _controlsChannel.invokeMethod(
-        'getDeviceId',
-      );
-      await SharedPreferencesService.setDeviceId(deviceId);
-      debugPrint('📱 [Device] Device ID: $deviceId');
-      return deviceId;
-    } catch (_) {
-      debugPrint('⚠️ [Device] Device ID পেতে ব্যর্থ');
-      return 'UNKNOWN';
-    }
+  Future<bool> lockDevice() async {
+    _lastManualActionTime = DateTime.now();
+    return await _executeLock();
   }
+
+  Future<bool> unlockDevice() async {
+    _lastManualActionTime = DateTime.now();
+    return await _executeUnlock();
+  }
+
+  Future<bool> isDeviceLocked() async => SharedPreferencesService.isDeviceLocked();
 
   Future<bool> checkAdminStatus() async {
     try {
       final bool active = await _controlsChannel.invokeMethod('isAdminActive');
       await SharedPreferencesService.setAdminActive(active);
-      debugPrint('👑 [Admin] Admin Status: $active');
       return active;
-    } catch (_) {
-      debugPrint('⚠️ [Admin] Admin Status চেক করতে ব্যর্থ');
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
   Future<bool> activateAdmin() async {
     try {
-      debugPrint('👑 [Admin] Admin Activate করা হচ্ছে...');
       await _controlsChannel.invokeMethod('activateAdmin');
       await Future.delayed(const Duration(seconds: 1));
-      final bool isActive = await checkAdminStatus();
-      debugPrint('👑 [Admin] Admin Status: $isActive');
-      return isActive;
+      return await checkAdminStatus();
+    } catch (e) { return false; }
+  }
+
+  Future<String> getDeviceId() async {
+    try {
+      final String id = await _controlsChannel.invokeMethod('getDeviceId');
+      await SharedPreferencesService.setDeviceId(id);
+      return id;
+    } catch (_) { return 'UNKNOWN'; }
+  }
+
+  Future<Map<String, dynamic>> getFullDeviceInfo() async {
+    try {
+      final dynamic info = await _deviceInfoChannel.invokeMethod('getDeviceInfo');
+      return Map<String, dynamic>.from(info);
     } catch (e) {
-      debugPrint('❌ [Admin] Admin Activate করতে ব্যর্থ: $e');
-      return false;
+      return {};
     }
   }
 }

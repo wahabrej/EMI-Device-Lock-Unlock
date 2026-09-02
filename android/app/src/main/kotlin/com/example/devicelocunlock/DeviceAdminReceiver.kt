@@ -3,17 +3,26 @@ package com.example.devicelocunlock
 import android.app.admin.DeviceAdminReceiver
 import android.content.Context
 import android.content.Intent
-import android.widget.Toast
+import android.util.Log
 
-class DeviceAdminReceiver : DeviceAdminReceiver() {
+// সরাসরি android.app.admin.DeviceAdminReceiver ইনহেরিট করা হয়েছে
+class DeviceAdminReceiver : android.app.admin.DeviceAdminReceiver() {
 
     override fun onEnabled(context: Context, intent: Intent) {
         super.onEnabled(context, intent)
-        Toast.makeText(context, "✅ Device Admin Activated", Toast.LENGTH_LONG).show()
+        Log.d(TAG, "✅ Device Admin enabled successfully")
     }
 
     override fun onDisabled(context: Context, intent: Intent) {
         super.onDisabled(context, intent)
-        Toast.makeText(context, "Device Admin Deactivated", Toast.LENGTH_LONG).show()
+        Log.d(TAG, "❌ Device Admin disabled")
+    }
+
+    override fun onDisableRequested(context: Context, intent: Intent): CharSequence? {
+        return "This device is managed by EMI Lock Protection. Disabling this will restrict phone usage."
+    }
+
+    companion object {
+        private const val TAG = "DeviceAdminReceiver"
     }
 }
