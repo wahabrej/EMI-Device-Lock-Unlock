@@ -5,14 +5,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class DeviceControlService extends ChangeNotifier {
-  static final DeviceControlService _instance = DeviceControlService._internal();
+  static final DeviceControlService _instance =
+  DeviceControlService._internal();
   static DeviceControlService get instance => _instance;
   DeviceControlService._internal();
 
   factory DeviceControlService() => _instance;
 
-  static const MethodChannel _controlsChannel = MethodChannel('com.example.devicelocunlock/controls');
-  static const MethodChannel _deviceInfoChannel = MethodChannel('com.example.devicelocunlock/device');
+  static const MethodChannel _controlsChannel = MethodChannel(
+    'com.example.devicelocunlock/controls',
+  );
+  static const MethodChannel _deviceInfoChannel = MethodChannel(
+    'com.example.devicelocunlock/device',
+  );
 
   Timer? _syncTimer;
   final ApiService _apiService = ApiService();
@@ -22,6 +27,12 @@ class DeviceControlService extends ChangeNotifier {
 
   bool get isLocked => _isLocked;
   String get lockReason => _lockReason;
+
+  @override
+  void dispose() {
+    stopLockStatusSync();
+    super.dispose();
+  }
 
   Future<void> init() async {
     _isLocked = SharedPreferencesService.isDeviceLocked();
@@ -39,19 +50,52 @@ class DeviceControlService extends ChangeNotifier {
   void startLockStatusSync() {
     _syncTimer?.cancel();
 
-    // ক্লায়েন্টের রিকোয়ারমেন্ট: ৫ মিনিট পরে চেক (বা ১০ মিনিট)
-    debugPrint('🔄 [Sync] Timer শুরু হলো (৫ মিনিট পরপর)');
-    _syncTimer = Timer.periodic(const Duration(minutes: 5), (timer) async {
-      await syncWithServer();
+    debugPrint('🔄 [Sync] Timer শুরু হচ্ছে...');
+    debugPrint('⏱️ [Sync] প্রথম চেক ১০ সেকেন্ড পর, তারপর প্রতি ১০ সেকেন্ড পরপর');
+
+    // প্রথম চেক ১০ সেকেন্ড পর
+    Future.delayed(const Duration(seconds: 5), () {
+      syncWithServer();
     });
 
-    // প্রথমবার চেক করা হবে
-    syncWithServer();
+    // তারপর প্রতি ১০ সেকেন্ড পর পর চেক
+    _syncTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      debugPrint('⏰ [Sync] ১০ সেকেন্ড পার হয়েছে, চেক করা হচ্ছে...');
+      await syncWithServer();
+    });
+  }
+
+  //  নতুন মেথড - সরাসরি চেক শুরু করার জন্য
+  Future<void> startSyncImmediately() async {
+    _syncTimer?.cancel();
+    debugPrint('🔄 [Sync] সাথে সাথেই চেক শুরু করা হচ্ছে...');
+    await syncWithServer();
+
+    // প্রতি ১০ সেকেন্ড পর পর চেক
+    _syncTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+      debugPrint('⏰ [Sync] ১০ সেকেন্ড পার হয়েছে, চেক করা হচ্ছে...');
+      await syncWithServer();
+    });
+  }
+
+  void stopLockStatusSync() {
+    _syncTimer?.cancel();
+    _syncTimer = null;
+    debugPrint('⏹️ [Sync] Timer বন্ধ করা হয়েছে');
+  }
+
+  // ম্যানুয়ালি চেক করার জন্য
+  Future<void> manualSync() async {
+    debugPrint('🔄 [Sync] ম্যানুয়ালি চেক করা হচ্ছে...');
+    await syncWithServer();
   }
 
   Future<void> syncWithServer() async {
     final imei = SharedPreferencesService.getIMEI();
-    if (imei.isEmpty) return;
+    if (imei.isEmpty) {
+      debugPrint('⚠️ [Sync] IMEI পাওয়া যায়নি, চেক বাদ দেওয়া হচ্ছে');
+      return;
+    }
 
     debugPrint('🔍 [Sync] Lock Status চেক করা হচ্ছে (IMEI: $imei)');
     final response = await _apiService.getLockStatus(imei);
@@ -59,9 +103,13 @@ class DeviceControlService extends ChangeNotifier {
     if (response != null && response['success'] == true) {
       final data = response['data'];
       final bool serverLockStatus = data['isLocked'] ?? false;
+      final String serverLockReason = data['lockReason'] ?? "";
 
+      debugPrint('📊 [Sync] Server Response: isLocked=$serverLockStatus, reason=$serverLockReason');
+
+      // SharedPreferences এ সেভ করা
       await SharedPreferencesService.saveLockData(data);
-      _lockReason = data['lockReason'] ?? "";
+      _lockReason = serverLockReason;
 
       if (serverLockStatus) {
         debugPrint('🔒 [Sync] Backend থেকে LOCKED স্ট্যাটাস এসেছে!');
@@ -73,10 +121,6 @@ class DeviceControlService extends ChangeNotifier {
     } else {
       debugPrint('❌ [Sync] API কল failed বা সঠিক রেসপন্স আসেনি');
     }
-  }
-
-  void stopLockStatusSync() {
-    _syncTimer?.cancel();
   }
 
   Future<bool> lockDevice() async {
@@ -98,7 +142,9 @@ class DeviceControlService extends ChangeNotifier {
     debugPrint('🔓 [Control] Device আনলক করা হচ্ছে...');
     try {
       await _controlsChannel.invokeMethod('unlockDevice');
-    } catch (e) {}
+    } catch (e) {
+      debugPrint('⚠️ [Control] আনলক করতে সমস্যা: $e');
+    }
 
     _isLocked = false;
     await SharedPreferencesService.setDeviceLocked(false);
@@ -115,19 +161,26 @@ class DeviceControlService extends ChangeNotifier {
   // গুরুত্বপূর্ণ: API তে পাঠানোর জন্য সব ডিভাইস ইনফো
   Future<Map<String, dynamic>> getFullDeviceInfo() async {
     try {
-      final Map<dynamic, dynamic>? info = await _deviceInfoChannel.invokeMethod('getDeviceInfo');
+      final Map<dynamic, dynamic>? info = await _deviceInfoChannel.invokeMethod(
+        'getDeviceInfo',
+      );
       return Map<String, dynamic>.from(info ?? {});
     } catch (e) {
+      debugPrint('❌ [Device] ডিভাইস ইনফো পেতে ব্যর্থ: $e');
       return {};
     }
   }
 
   Future<String> getDeviceId() async {
     try {
-      final String deviceId = await _controlsChannel.invokeMethod('getDeviceId');
+      final String deviceId = await _controlsChannel.invokeMethod(
+        'getDeviceId',
+      );
       await SharedPreferencesService.setDeviceId(deviceId);
+      debugPrint('📱 [Device] Device ID: $deviceId');
       return deviceId;
     } catch (_) {
+      debugPrint('⚠️ [Device] Device ID পেতে ব্যর্থ');
       return 'UNKNOWN';
     }
   }
@@ -136,18 +189,24 @@ class DeviceControlService extends ChangeNotifier {
     try {
       final bool active = await _controlsChannel.invokeMethod('isAdminActive');
       await SharedPreferencesService.setAdminActive(active);
+      debugPrint('👑 [Admin] Admin Status: $active');
       return active;
     } catch (_) {
+      debugPrint('⚠️ [Admin] Admin Status চেক করতে ব্যর্থ');
       return false;
     }
   }
 
   Future<bool> activateAdmin() async {
     try {
+      debugPrint('👑 [Admin] Admin Activate করা হচ্ছে...');
       await _controlsChannel.invokeMethod('activateAdmin');
       await Future.delayed(const Duration(seconds: 1));
-      return await checkAdminStatus();
+      final bool isActive = await checkAdminStatus();
+      debugPrint('👑 [Admin] Admin Status: $isActive');
+      return isActive;
     } catch (e) {
+      debugPrint('❌ [Admin] Admin Activate করতে ব্যর্থ: $e');
       return false;
     }
   }

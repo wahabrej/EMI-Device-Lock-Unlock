@@ -15,9 +15,11 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _imei1Controller = TextEditingController();
   final TextEditingController _imei2Controller = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController(); // 🆕 Added
 
   final FocusNode _imei1FocusNode = FocusNode();
   final FocusNode _imei2FocusNode = FocusNode();
+  final FocusNode _phoneFocusNode = FocusNode(); // 🆕 Added
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -39,8 +41,10 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     _imei1Controller.dispose();
     _imei2Controller.dispose();
+    _phoneController.dispose(); // 🆕 Added
     _imei1FocusNode.dispose();
     _imei2FocusNode.dispose();
+    _phoneFocusNode.dispose(); // 🆕 Added
     super.dispose();
   }
 
@@ -74,17 +78,20 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final String inputImei1 = _imei1Controller.text.trim();
       final String inputImei2 = _imei2Controller.text.trim();
+      final String inputPhone = _phoneController.text.trim(); // 🆕 Added
       final String? fcmToken = SharedPreferencesService.getFCMToken();
 
       debugPrint('-----------------------');
       debugPrint('🔐 [LOGIN] Attempting to Login...');
       debugPrint('📱 [LOGIN] User Input IMEI 1: $inputImei1');
       debugPrint('📱 [LOGIN] User Input IMEI 2: $inputImei2');
+      debugPrint('📞 [LOGIN] Customer Phone: $inputPhone'); // 🆕 Added
       debugPrint('-----------------------');
 
       final trackData = {
         "imei": inputImei1,
         "imei2": inputImei2,
+        "customerPhone": inputPhone, // 🆕 Added
         "serialNumber": _deviceInfo['serialNumber'] ?? "",
         "batteryLevel": int.tryParse(_deviceInfo['batteryLevel']?.toString().replaceAll('%', '') ?? '85') ?? 85,
         "brand": _deviceInfo['brand'] ?? "Unknown",
@@ -106,6 +113,7 @@ class _LoginScreenState extends State<LoginScreen> {
         debugPrint('🔒 [LOGIN] isLocked: $isLocked');
         debugPrint('📝 [LOGIN] lockReason: ${data['lockReason']}');
         debugPrint('👤 [LOGIN] customerName: ${data['customerName']}');
+        debugPrint('📞 [LOGIN] customerPhone: ${data['customerPhone']}'); // 🆕 Added
         debugPrint('-----------------------');
 
         await SharedPreferencesService.setIMEI(inputImei1);
@@ -266,14 +274,66 @@ class _LoginScreenState extends State<LoginScreen> {
             focusNode: _imei2FocusNode,
             label: 'IMEI 2 (Secondary)',
             hint: 'Enter IMEI 2 (Dial *#06#)',
-            onFieldSubmitted: (_) => _login(),
+            onFieldSubmitted: (_) => _phoneFocusNode.requestFocus(), // 🆕 Changed
           ),
+          const SizedBox(height: 16), // 🆕 Added spacing
+          _buildPhoneField(), // 🆕 Added
           const SizedBox(height: 24),
           _buildLoginButton(),
           const SizedBox(height: 12),
           _buildDeviceInfo(),
         ],
       ),
+    );
+  }
+
+  // 🆕 Phone Field Widget
+  Widget _buildPhoneField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Customer Phone Number',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF1A1A1A),
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextFormField(
+          controller: _phoneController,
+          focusNode: _phoneFocusNode,
+          keyboardType: TextInputType.phone,
+          inputFormatters: [
+            FilteringTextInputFormatter.digitsOnly,
+            LengthLimitingTextInputFormatter(11), // বাংলাদেশের মোবাইল নম্বরের জন্য
+          ],
+          decoration: InputDecoration(
+            hintText: 'Enter Customer Phone Number (e.g., 017XXXXXXXX)',
+            prefixIcon: const Icon(Icons.phone, color: Color(0xFF1A6FB0), size: 22),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            filled: true,
+            fillColor: Colors.grey.shade50,
+          ),
+          validator: (value) {
+            if (value == null || value.isEmpty) {
+              return 'Please enter customer phone number';
+            }
+            if (value.length < 11) {
+              return 'Phone number must be at least 11 digits';
+            }
+            if (value.length > 11) {
+              return 'Phone number must be exactly 11 digits';
+            }
+            if (int.tryParse(value) == null) {
+              return 'Phone number must be numeric';
+            }
+            return null;
+          },
+          onFieldSubmitted: (_) => _login(),
+        ),
+      ],
     );
   }
 

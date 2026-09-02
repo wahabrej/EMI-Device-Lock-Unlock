@@ -85,14 +85,14 @@ class ApiService {
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       } else {
-        debugPrint('❌ [API] Error getting lock status: ${response.statusCode}');
+        debugPrint('[API] Error getting lock status: ${response.statusCode}');
         return null;
       }
     } on SocketException catch (e) {
-      debugPrint('❌ [API] Network Error (No Internet): $e');
+      debugPrint('[API] Network Error (No Internet): $e');
       return null;
     } on TimeoutException catch (e) {
-      debugPrint('❌ [API] Timeout Error: $e');
+      debugPrint('[API] Timeout Error: $e');
       return null;
     } catch (e) {
       debugPrint('❌ [API] Unknown Exception: $e');
