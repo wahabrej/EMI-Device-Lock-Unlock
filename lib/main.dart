@@ -17,8 +17,8 @@ void main() async {
   // SharedPreferences initialization
   await SharedPreferencesService.init();
   
-  // Device Control Service initialization and start sync
-  await DeviceControlService().init();
+  // Device Control Service initialization (Singleton instance)
+  await DeviceControlService.instance.init();
 
   runApp(const MyApp());
 }
@@ -28,62 +28,68 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ১. প্রয়োজনীয় স্ট্যাটাস চেক করা
-    final bool isLocked = SharedPreferencesService.isDeviceLocked();
-    final String imei = SharedPreferencesService.getIMEI();
-    final bool isLoggedIn = imei.isNotEmpty;
+    return MultiProvider(
+      providers: [
+        // Singleton instance ব্যবহার করা হচ্ছে যাতে সব স্টেট সিঙ্ক থাকে
+        ChangeNotifierProvider.value(value: DeviceControlService.instance),
+      ],
+      child: ScreenUtilInit(
+        minTextAdapt: true,
+        splitScreenMode: true,
+        designSize: const Size(375, 812),
+        builder: (context, child) {
+          return Consumer<DeviceControlService>(
+            builder: (context, service, _) {
+              // ১. প্রয়োজনীয় স্ট্যাটাস চেক করা
+              final String imei = SharedPreferencesService.getIMEI();
+              final bool isLoggedIn = imei.isNotEmpty;
+              final bool isLocked = service.isLocked;
 
-    // ২. সরাসরি সঠিক স্ক্রিনটি নির্ধারণ করা
-    Widget startScreen;
-    if (isLocked) {
-      startScreen = const LockScreen();
-    } else if (isLoggedIn) {
-      startScreen = const HomeScreen();
-    } else {
-      startScreen = const LoginScreen();
-    }
+              // ২. সরাসরি সঠিক স্ক্রিনটি নির্ধারণ করা (রিয়েল-টাইম আপডেট হবে)
+              // একবার লগইন হলে (imei থাকলে) সে আর কখনো LoginScreen দেখবে না
+              Widget startScreen;
+              if (isLocked) {
+                startScreen = const LockScreen();
+              } else if (isLoggedIn) {
+                startScreen = const HomeScreen();
+              } else {
+                startScreen = const LoginScreen();
+              }
 
-    return ScreenUtilInit(
-      minTextAdapt: true,
-      splitScreenMode: true,
-      designSize: const Size(375, 812),
-      builder: (context, child) {
-        return MultiProvider(
-          providers: [
-            ChangeNotifierProvider(create: (_) => DeviceControlService()),
-          ],
-          child: MaterialApp(
-            debugShowCheckedModeBanner: false,
-            // 'home' প্রোপার্টি ব্যবহার করা হয়েছে যাতে স্ট্যাক পুরোপুরি ক্লিন থাকে
-            home: startScreen,
-            routes: AppRoutes.routes,
-            onUnknownRoute: (settings) {
-              return MaterialPageRoute(
-                builder: (context) => Scaffold(
-                  body: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text('Navigation Error'),
-                        const SizedBox(height: 20),
-                        ElevatedButton(
-                          onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                            context, 
-                            isLoggedIn ? RouteName.homeScreen : RouteName.loginScreen,
-                            (route) => false
-                          ),
-                          child: const Text('Back to App'),
+              return MaterialApp(
+                key: ValueKey("$isLocked-$isLoggedIn"), // স্ট্যাটাস চেঞ্জ হলে UI রিফ্রেশ নিশ্চিত করতে
+                debugShowCheckedModeBanner: false,
+                home: startScreen,
+                routes: AppRoutes.routes,
+                onUnknownRoute: (settings) {
+                  return MaterialPageRoute(
+                    builder: (context) => Scaffold(
+                      body: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text('Navigation Error'),
+                            const SizedBox(height: 20),
+                            ElevatedButton(
+                              onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                                context, 
+                                isLoggedIn ? RouteName.homeScreen : RouteName.loginScreen,
+                                (route) => false
+                              ),
+                              child: const Text('Back to App'),
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
+                navigatorObservers: [HeroController()],
               );
             },
-            navigatorObservers: [HeroController()],
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }

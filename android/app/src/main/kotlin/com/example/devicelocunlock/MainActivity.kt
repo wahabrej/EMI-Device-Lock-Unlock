@@ -1,14 +1,15 @@
 package com.example.devicelocunlock
 
+import android.app.ActivityManager
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.BatteryManager
+import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -18,91 +19,110 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.devicelocunlock/controls"
     private val DEVICE_CHANNEL = "com.example.devicelocunlock/device"
 
+    companion object {
+        var isHardLocked = false
+
+        fun applyEMIHardLockStatic(context: Context, enable: Boolean): Boolean {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminComponent = ComponentName(context, DeviceAdminReceiver::class.java)
+
+            // স্ট্যাটাসটি SharedPreferences এ সেভ করা যাতে অ্যাপ বন্ধ থাকলেও মনে থাকে
+            val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("flutter.device_locked", enable).apply()
+            isHardLocked = enable
+
+            return try {
+                if (enable) {
+                    if (dpm.isDeviceOwnerApp(context.packageName)) {
+                        dpm.setLockTaskPackages(adminComponent, arrayOf(context.packageName))
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            dpm.setStatusBarDisabled(adminComponent, true)
+                            dpm.setKeyguardDisabled(adminComponent, true)
+                        }
+                    }
+
+                    // অ্যাপটি সামনে নিয়ে আসা
+                    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                    intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    context.startActivity(intent)
+
+                    // স্ক্রিন সাথে সাথে বন্ধ করে দেওয়া (লক করা)
+                    dpm.lockNow()
+                } else {
+                    if (dpm.isDeviceOwnerApp(context.packageName)) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            dpm.setStatusBarDisabled(adminComponent, false)
+                            dpm.setKeyguardDisabled(adminComponent, false)
+                        }
+                    }
+                }
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // অ্যাপ ওপেন হওয়ার সময় আগের লক স্ট্যাটাস চেক করা
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        isHardLocked = prefs.getBoolean("flutter.device_locked", false)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // যদি ডিভাইস হার্ড লক মোডে থাকে তবে কিয়স্ক মোড শুরু হবে
+        if (isHardLocked) {
+            try {
+                startLockTask()
+            } catch (e: Exception) {
+                // Device Owner না হলে এটি এরর দিতে পারে
+            }
+        }
+    }
+
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "lockDevice" -> {
-                        val success = applyEMIHardLock(true)
-                        result.success(success)
-                    }
+                    "lockDevice" -> result.success(applyEMIHardLockStatic(this, true))
                     "unlockDevice" -> {
-                        applyEMIHardLock(false)
-                        result.success(true)
+                        // আনলক করার সময় কিয়স্ক মোড বন্ধ করা
+                        try { stopLockTask() } catch (e: Exception) {}
+                        result.success(applyEMIHardLockStatic(this, false))
                     }
                     "isAdminActive" -> result.success(isDeviceAdminActive())
                     "activateAdmin" -> {
                         activateDeviceAdmin()
                         result.success(true)
                     }
-                    "getDeviceId" -> result.success(getAndroidDeviceId())
                     else -> result.notImplemented()
                 }
             }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL)
             .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "getDeviceInfo" -> result.success(getDeviceInfo())
-                    "getIMEI" -> result.success(getGeneratedIMEI())
-                    else -> result.notImplemented()
+                if (call.method == "getDeviceInfo") {
+                    result.success(getDeviceInfo())
+                } else {
+                    result.notImplemented()
                 }
             }
     }
 
-    private fun applyEMIHardLock(enable: Boolean): Boolean {
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
-
-        return try {
-            if (enable) {
-                if (!dpm.isAdminActive(adminComponent)) {
-                    Toast.makeText(this, "⚠️ Please activate Admin first!", Toast.LENGTH_LONG).show()
-                    return false
-                }
-
-                if (dpm.isDeviceOwnerApp(packageName)) {
-                    dpm.setLockTaskPackages(adminComponent, arrayOf(packageName))
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        dpm.setStatusBarDisabled(adminComponent, true)
-                        dpm.setKeyguardDisabled(adminComponent, true)
-                    }
-                }
-                
-                startLockTask()
-                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                window.addFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
-                window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
-                window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
-                
-                // স্ক্রিন অফ করবে, কিন্তু ডিভাইস ওনার থাকায় খোলার সাথে সাথে আমাদের অ্যাপই থাকবে
-                dpm.lockNow()
-                true
-            } else {
-                stopLockTask()
-                if (dpm.isDeviceOwnerApp(packageName)) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        dpm.setStatusBarDisabled(adminComponent, false)
-                        dpm.setKeyguardDisabled(adminComponent, false)
-                    }
-                }
-                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                window.clearFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
-                window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
-                window.clearFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
-                true
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
+    override fun onBackPressed() {
+        // হার্ড লক থাকলে ব্যাক বাটন কাজ করবে না
+        if (isHardLocked) return
+        super.onBackPressed()
     }
 
-    // ক্রাশ রোধ করার জন্য problematic ব্রডকাস্ট সরানো হয়েছে
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
+    override fun onPause() {
+        super.onPause()
+        // moveTaskToFront এখান থেকে সরিয়ে দেওয়া হয়েছে কারণ এটি ক্রাশের মূল কারণ ছিল।
+        // কিয়স্ক মোড (LockTask) সচল থাকলে এটি ছাড়াই ফোন সুরক্ষিত থাকবে।
     }
 
     private fun isDeviceAdminActive(): Boolean {
