@@ -27,10 +27,12 @@ class DeviceControlService extends ChangeNotifier {
   Future<void> init() async {
     _isLocked = SharedPreferencesService.isDeviceLocked();
     _lockReason = SharedPreferencesService.getLockReason();
-    debugPrint('🏁 [Service] Initialized. Current local status: $_isLocked');
-
+    
     await getDeviceId();
     await checkAdminStatus();
+    
+    // ব্যাকগ্রাউন্ডে ইন্টারনেট পারমিশন নিশ্চিত করা
+    await requestIgnoreBatteryOptimizations();
 
     final imei = SharedPreferencesService.getIMEI();
     if (imei.isNotEmpty) {
@@ -38,18 +40,22 @@ class DeviceControlService extends ChangeNotifier {
     }
   }
 
+  // ব্যাটারি অপ্টিমাইজেশন অফ করার রিকোয়েস্ট (যাতে ব্যাকগ্রাউন্ডে ইন্টারনেট থাকে)
+  Future<void> requestIgnoreBatteryOptimizations() async {
+    try {
+      await _controlsChannel.invokeMethod('requestIgnoreBatteryOptimizations');
+    } catch (e) {
+      debugPrint('⚠️ Error requesting battery optimization skip: $e');
+    }
+  }
+
   void startLockStatusSync() {
     _syncTimer?.cancel();
-    debugPrint('🔄 [Sync] Starting background sync...');
-    syncWithServer();
+    debugPrint('🔄 [Sync] Starting periodic sync...');
+    
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
       await syncWithServer();
     });
-  }
-
-  void stopLockStatusSync() {
-    _syncTimer?.cancel();
-    _syncTimer = null;
   }
 
   Future<void> syncWithServer() async {
@@ -63,22 +69,26 @@ class DeviceControlService extends ChangeNotifier {
 
     try {
       final response = await _apiService.getLockStatus(imei);
+      
       if (response != null && response['success'] == true) {
         final data = response['data'];
         if (data == null) return;
 
         final dynamic rawStatus = data['isLocked'] ?? data['is_locked'];
         bool serverLockStatus = false;
-        if (rawStatus is bool) serverLockStatus = rawStatus;
-        else if (rawStatus is int) serverLockStatus = rawStatus == 1;
-        else if (rawStatus is String) serverLockStatus = rawStatus.toLowerCase() == 'true' || rawStatus == '1';
+        
+        if (rawStatus is bool) {
+          serverLockStatus = rawStatus;
+        } else if (rawStatus is int) {
+          serverLockStatus = rawStatus == 1;
+        } else if (rawStatus is String) {
+          serverLockStatus = rawStatus.toLowerCase() == 'true' || rawStatus == '1';
+        }
 
         if (serverLockStatus != _isLocked) {
           if (serverLockStatus) {
-            debugPrint('🔒 [Sync] Server requested LOCK');
             await _executeLock();
           } else {
-            debugPrint('🔓 [Sync] Server requested UNLOCK');
             await _executeUnlock();
           }
         }
@@ -87,20 +97,20 @@ class DeviceControlService extends ChangeNotifier {
         _lockReason = data['lockReason']?.toString() ?? "";
       }
     } catch (e) {
-      debugPrint('❌ [Sync] Error: $e');
+      // ব্যাকগ্রাউন্ডে নেটওয়ার্ক এরর আসলে চুপচাপ থাকবে, ক্রাশ করবে না
+      debugPrint('📡 [Sync] Background Sync suppressed error: $e');
     }
   }
 
   Future<bool> _executeLock() async {
     try {
-      // ✅ ক্রাশের রিস্ক এড়াতে আগে স্ট্যাটাস সেভ করা হচ্ছে
-      await SharedPreferencesService.setDeviceLocked(true);
-      _isLocked = true;
-      notifyListeners();
-
-      await _controlsChannel.invokeMethod('lockDevice');
-      debugPrint('✅ [Device] Locked via Service');
-      return true;
+      final bool result = await _controlsChannel.invokeMethod('lockDevice');
+      if (result) {
+        _isLocked = true;
+        await SharedPreferencesService.setDeviceLocked(true);
+        notifyListeners();
+      }
+      return result;
     } catch (e) {
       return false;
     }
@@ -108,12 +118,10 @@ class DeviceControlService extends ChangeNotifier {
 
   Future<bool> _executeUnlock() async {
     try {
-      await SharedPreferencesService.setDeviceLocked(false);
-      _isLocked = false;
-      notifyListeners();
-
       await _controlsChannel.invokeMethod('unlockDevice');
-      debugPrint('✅ [Device] Unlocked via Service');
+      _isLocked = false;
+      await SharedPreferencesService.setDeviceLocked(false);
+      notifyListeners();
       return true;
     } catch (e) {
       return false;
@@ -122,12 +130,34 @@ class DeviceControlService extends ChangeNotifier {
 
   Future<bool> lockDevice() async {
     _lastManualActionTime = DateTime.now();
-    return await _executeLock();
+    final bool result = await _executeLock();
+    if (result) {
+      final imei = SharedPreferencesService.getIMEI();
+      if (imei.isNotEmpty) {
+        await _apiService.trackDevice({
+          'imei': imei,
+          'isLocked': true,
+          'status': 'locked_manual',
+        });
+      }
+    }
+    return result;
   }
 
   Future<bool> unlockDevice() async {
     _lastManualActionTime = DateTime.now();
-    return await _executeUnlock();
+    final bool result = await _executeUnlock();
+    if (result) {
+      final imei = SharedPreferencesService.getIMEI();
+      if (imei.isNotEmpty) {
+        await _apiService.trackDevice({
+          'imei': imei,
+          'isLocked': false,
+          'status': 'active_manual',
+        });
+      }
+    }
+    return result;
   }
 
   Future<bool> isDeviceLocked() async => SharedPreferencesService.isDeviceLocked();
@@ -158,8 +188,8 @@ class DeviceControlService extends ChangeNotifier {
 
   Future<Map<String, dynamic>> getFullDeviceInfo() async {
     try {
-      final dynamic info = await _deviceInfoChannel.invokeMethod('getDeviceInfo');
-      return Map<String, dynamic>.from(info);
+      final Map<dynamic, dynamic>? info = await _deviceInfoChannel.invokeMethod('getDeviceInfo');
+      return Map<String, dynamic>.from(info ?? {});
     } catch (e) {
       return {};
     }

@@ -1,14 +1,18 @@
 package com.example.devicelocunlock
 
 import android.app.ActivityManager
+import android.app.KeyguardManager
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.BatteryManager
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.WindowManager
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
@@ -23,10 +27,11 @@ class MainActivity : FlutterActivity() {
         var isHardLocked = false
 
         fun applyEMIHardLockStatic(context: Context, enable: Boolean): Boolean {
+            Log.d("MainActivity", "applyEMIHardLockStatic called: enable=$enable")
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val adminComponent = ComponentName(context, DeviceAdminReceiver::class.java)
 
-            // স্ট্যাটাসটি SharedPreferences এ সেভ করা যাতে অ্যাপ বন্ধ থাকলেও মনে থাকে
+            // SharedPreferences-এ স্ট্যাটাস সেভ করা
             val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             prefs.edit().putBoolean("flutter.device_locked", enable).apply()
             isHardLocked = enable
@@ -41,12 +46,21 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
-                    // অ্যাপটি সামনে নিয়ে আসা
+                    // ১. Wake up screen (WakeLock)
+                    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    @Suppress("DEPRECATION")
+                    val wl = pm.newWakeLock(PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE, "Lock:Wake")
+                    wl.acquire(10000)
+                    if (wl.isHeld) wl.release()
+
+                    // ২. অ্যাপটি সামনে নিয়ে আসা (রিয়েল ফোনে এটি Overlay Permission ছাড়া কাজ করবে না)
                     val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                    intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or 
+                                   Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or 
+                                   Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                   Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     context.startActivity(intent)
 
-                    // স্ক্রিন সাথে সাথে বন্ধ করে দেওয়া (লক করা)
                     dpm.lockNow()
                 } else {
                     if (dpm.isDeviceOwnerApp(context.packageName)) {
@@ -58,6 +72,7 @@ class MainActivity : FlutterActivity() {
                 }
                 true
             } catch (e: Exception) {
+                Log.e("MainActivity", "Hard lock error: ${e.message}")
                 false
             }
         }
@@ -65,20 +80,79 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // অ্যাপ ওপেন হওয়ার সময় আগের লক স্ট্যাটাস চেক করা
+        
+        turnScreenOnAndKeyguardOff()
+
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         isHardLocked = prefs.getBoolean("flutter.device_locked", false)
+
+        // ১. Native Sync Service স্টার্ট করা
+        startNativeSyncService()
+        
+        // ২. রিয়েল ফোনের জন্য প্রয়োজনীয় পারমিশন রিকোয়েস্ট (Overlay + Battery)
+        checkAndRequestPermissions()
+    }
+
+    private fun checkAndRequestPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            // ১. Battery Optimization পারমিশন
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    intent.data = Uri.parse("package:$packageName")
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
+
+            // ২. Overlay Permission (রিয়েল ফোনে ব্যাকগ্রাউন্ড লকের জন্য এটি বাধ্যতামূলক)
+            if (!Settings.canDrawOverlays(this)) {
+                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                startActivity(intent)
+            }
+        }
+    }
+
+    private fun startNativeSyncService() {
+        Log.i("MainActivity", "Starting Native Sync Service...")
+        val serviceIntent = Intent(this, SyncForegroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+    }
+
+    private fun turnScreenOnAndKeyguardOff() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            keyguardManager.requestDismissKeyguard(this, null)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                          WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        // যদি ডিভাইস হার্ড লক মোডে থাকে তবে কিয়স্ক মোড শুরু হবে
         if (isHardLocked) {
-            try {
-                startLockTask()
-            } catch (e: Exception) {
-                // Device Owner না হলে এটি এরর দিতে পারে
-            }
+            try { startLockTask() } catch (e: Exception) {}
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (isHardLocked) {
+            turnScreenOnAndKeyguardOff()
+            try { startLockTask() } catch (e: Exception) {}
         }
     }
 
@@ -90,39 +164,26 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "lockDevice" -> result.success(applyEMIHardLockStatic(this, true))
                     "unlockDevice" -> {
-                        // আনলক করার সময় কিয়স্ক মোড বন্ধ করা
                         try { stopLockTask() } catch (e: Exception) {}
                         result.success(applyEMIHardLockStatic(this, false))
                     }
                     "isAdminActive" -> result.success(isDeviceAdminActive())
-                    "activateAdmin" -> {
-                        activateDeviceAdmin()
-                        result.success(true)
-                    }
+                    "activateAdmin" -> { activateDeviceAdmin(); result.success(true) }
+                    "requestIgnoreBatteryOptimizations" -> { checkAndRequestPermissions(); result.success(true) }
                     else -> result.notImplemented()
                 }
             }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL)
             .setMethodCallHandler { call, result ->
-                if (call.method == "getDeviceInfo") {
-                    result.success(getDeviceInfo())
-                } else {
-                    result.notImplemented()
-                }
+                if (call.method == "getDeviceInfo") result.success(getDeviceInfo())
+                else result.notImplemented()
             }
     }
 
     override fun onBackPressed() {
-        // হার্ড লক থাকলে ব্যাক বাটন কাজ করবে না
         if (isHardLocked) return
         super.onBackPressed()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        // moveTaskToFront এখান থেকে সরিয়ে দেওয়া হয়েছে কারণ এটি ক্রাশের মূল কারণ ছিল।
-        // কিয়স্ক মোড (LockTask) সচল থাকলে এটি ছাড়াই ফোন সুরক্ষিত থাকবে।
     }
 
     private fun isDeviceAdminActive(): Boolean {
