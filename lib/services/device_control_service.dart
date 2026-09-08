@@ -5,14 +5,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class DeviceControlService extends ChangeNotifier {
-  static final DeviceControlService _instance = DeviceControlService._internal();
+  static final DeviceControlService _instance =
+      DeviceControlService._internal();
   static DeviceControlService get instance => _instance;
   DeviceControlService._internal();
 
   factory DeviceControlService() => _instance;
 
-  static const MethodChannel _controlsChannel = MethodChannel('com.example.devicelocunlock/controls');
-  static const MethodChannel _deviceInfoChannel = MethodChannel('com.example.devicelocunlock/device');
+  static const MethodChannel _controlsChannel = MethodChannel(
+    'com.example.devicelocunlock/controls',
+  );
+  static const MethodChannel _deviceInfoChannel = MethodChannel(
+    'com.example.devicelocunlock/device',
+  );
 
   Timer? _syncTimer;
   final ApiService _apiService = ApiService();
@@ -27,10 +32,10 @@ class DeviceControlService extends ChangeNotifier {
   Future<void> init() async {
     _isLocked = SharedPreferencesService.isDeviceLocked();
     _lockReason = SharedPreferencesService.getLockReason();
-    
+
     await getDeviceId();
     await checkAdminStatus();
-    
+
     // ব্যাকগ্রাউন্ডে ইন্টারনেট পারমিশন নিশ্চিত করা
     await requestIgnoreBatteryOptimizations();
 
@@ -52,7 +57,7 @@ class DeviceControlService extends ChangeNotifier {
   void startLockStatusSync() {
     _syncTimer?.cancel();
     debugPrint('🔄 [Sync] Starting periodic sync...');
-    
+
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
       await syncWithServer();
     });
@@ -62,27 +67,28 @@ class DeviceControlService extends ChangeNotifier {
     final imei = SharedPreferencesService.getIMEI();
     if (imei.isEmpty) return;
 
-    if (_lastManualActionTime != null && 
+    if (_lastManualActionTime != null &&
         DateTime.now().difference(_lastManualActionTime!).inSeconds < 60) {
       return;
     }
 
     try {
       final response = await _apiService.getLockStatus(imei);
-      
+
       if (response != null && response['success'] == true) {
         final data = response['data'];
         if (data == null) return;
 
         final dynamic rawStatus = data['isLocked'] ?? data['is_locked'];
         bool serverLockStatus = false;
-        
+
         if (rawStatus is bool) {
           serverLockStatus = rawStatus;
         } else if (rawStatus is int) {
           serverLockStatus = rawStatus == 1;
         } else if (rawStatus is String) {
-          serverLockStatus = rawStatus.toLowerCase() == 'true' || rawStatus == '1';
+          serverLockStatus =
+              rawStatus.toLowerCase() == 'true' || rawStatus == '1';
         }
 
         if (serverLockStatus != _isLocked) {
@@ -92,7 +98,7 @@ class DeviceControlService extends ChangeNotifier {
             await _executeUnlock();
           }
         }
-        
+
         await SharedPreferencesService.saveLockData(data);
         _lockReason = data['lockReason']?.toString() ?? "";
       }
@@ -160,14 +166,26 @@ class DeviceControlService extends ChangeNotifier {
     return result;
   }
 
-  Future<bool> isDeviceLocked() async => SharedPreferencesService.isDeviceLocked();
+  Future<bool> isDeviceLocked() async =>
+      SharedPreferencesService.isDeviceLocked();
 
   Future<bool> checkAdminStatus() async {
     try {
       final bool active = await _controlsChannel.invokeMethod('isAdminActive');
       await SharedPreferencesService.setAdminActive(active);
       return active;
-    } catch (_) { return false; }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> isDeviceOwner() async {
+    try {
+      return await _controlsChannel.invokeMethod<bool>('isDeviceOwner') ??
+          false;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<bool> activateAdmin() async {
@@ -175,7 +193,18 @@ class DeviceControlService extends ChangeNotifier {
       await _controlsChannel.invokeMethod('activateAdmin');
       await Future.delayed(const Duration(seconds: 1));
       return await checkAdminStatus();
-    } catch (e) { return false; }
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // ✅ ডিভাইস ওনার বা অ্যাডমিন স্ট্যাটাস রিমুভ করার মেথড
+  Future<void> removeManagement() async {
+    try {
+      await _controlsChannel.invokeMethod('removeManagement');
+    } catch (e) {
+      debugPrint('Error removing management: $e');
+    }
   }
 
   Future<String> getDeviceId() async {
@@ -183,12 +212,16 @@ class DeviceControlService extends ChangeNotifier {
       final String id = await _controlsChannel.invokeMethod('getDeviceId');
       await SharedPreferencesService.setDeviceId(id);
       return id;
-    } catch (_) { return 'UNKNOWN'; }
+    } catch (_) {
+      return 'UNKNOWN';
+    }
   }
 
   Future<Map<String, dynamic>> getFullDeviceInfo() async {
     try {
-      final Map<dynamic, dynamic>? info = await _deviceInfoChannel.invokeMethod('getDeviceInfo');
+      final Map<dynamic, dynamic>? info = await _deviceInfoChannel.invokeMethod(
+        'getDeviceInfo',
+      );
       return Map<String, dynamic>.from(info ?? {});
     } catch (e) {
       return {};

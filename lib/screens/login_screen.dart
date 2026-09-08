@@ -4,6 +4,7 @@ import 'package:devicelocunlock/services/device_control_service.dart';
 import 'package:devicelocunlock/services/shared_preferences_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -67,6 +68,22 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _scanIMEI(TextEditingController controller) async {
+    final String? scannedCode = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (context) => const BarcodeScannerScreen()),
+    );
+
+    if (scannedCode != null) {
+      setState(() {
+        // শুধু সংখ্যাগুলো নিবে (IMEI সাধারণত ১৫ ডিজিটের সংখ্যা হয়)
+        String cleaned = scannedCode.replaceAll(RegExp(r'[^0-9]'), '');
+        if (cleaned.length > 15) cleaned = cleaned.substring(0, 15);
+        controller.text = cleaned;
+      });
+    }
+  }
+
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -86,12 +103,20 @@ class _LoginScreenState extends State<LoginScreen> {
         "imei2": inputImei2,
         "customerPhone": inputPhone,
         "serialNumber": _deviceInfo['serialNumber'] ?? "",
-        "batteryLevel": int.tryParse(_deviceInfo['batteryLevel']?.toString().replaceAll('%', '') ?? '85') ?? 85,
+        "batteryLevel":
+            int.tryParse(
+              _deviceInfo['batteryLevel']?.toString().replaceAll('%', '') ??
+                  '85',
+            ) ??
+            85,
         "brand": _deviceInfo['brand'] ?? "Unknown",
         "model": _deviceInfo['model'] ?? "Unknown",
-        "osVersion": _deviceInfo['osVersion'] ?? _deviceInfo['androidVersion'] ?? "Unknown",
+        "osVersion":
+            _deviceInfo['osVersion'] ??
+            _deviceInfo['androidVersion'] ??
+            "Unknown",
         "appVersion": "1.0.0",
-        "fcmToken": fcmToken ?? "NO_TOKEN"
+        "fcmToken": fcmToken ?? "NO_TOKEN",
       };
 
       final response = await _apiService.trackDevice(trackData);
@@ -104,17 +129,27 @@ class _LoginScreenState extends State<LoginScreen> {
         await SharedPreferencesService.saveLockData(data);
 
         if (isLocked) {
-          debugPrint('🔒 [LOGIN] Device is LOCKED. Redirecting to LockScreen...');
+          debugPrint(
+            '🔒 [LOGIN] Device is LOCKED. Redirecting to LockScreen...',
+          );
           await DeviceControlService.instance.lockDevice();
           if (mounted) {
-            Navigator.pushNamedAndRemoveUntil(context, RouteName.lockScreen, (route) => false);
+            Navigator.pushNamedAndRemoveUntil(
+              context,
+              RouteName.lockScreen,
+              (route) => false,
+            );
           }
         } else {
           debugPrint('🔓 [LOGIN] Device is UNLOCKED. Proceeding to Home...');
           await DeviceControlService.instance.unlockDevice();
           DeviceControlService.instance.startLockStatusSync();
           if (mounted) {
-            Navigator.pushNamedAndRemoveUntil(context, RouteName.homeScreen, (route) => false);
+            Navigator.pushNamedAndRemoveUntil(
+              context,
+              RouteName.homeScreen,
+              (route) => false,
+            );
           }
         }
       } else {
@@ -164,7 +199,11 @@ class _LoginScreenState extends State<LoginScreen> {
         const SizedBox(height: 10),
         const Text(
           'SmartPay Management',
-          style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ],
     );
@@ -181,11 +220,31 @@ class _LoginScreenState extends State<LoginScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (_errorMessage != null) _buildError(),
-          _buildField(_imei1Controller, _imei1FocusNode, 'IMEI 1', Icons.phone_android, 15),
+          _buildField(
+            _imei1Controller,
+            _imei1FocusNode,
+            'IMEI 1',
+            Icons.phone_android,
+            15,
+            onScan: () => _scanIMEI(_imei1Controller),
+          ),
           const SizedBox(height: 16),
-          _buildField(_imei2Controller, _imei2FocusNode, 'IMEI 2', Icons.phone_android, 15),
+          _buildField(
+            _imei2Controller,
+            _imei2FocusNode,
+            'IMEI 2',
+            Icons.phone_android,
+            15,
+            onScan: () => _scanIMEI(_imei2Controller),
+          ),
           const SizedBox(height: 16),
-          _buildField(_phoneController, _phoneFocusNode, 'Phone Number', Icons.phone, 11),
+          _buildField(
+            _phoneController,
+            _phoneFocusNode,
+            'Phone Number',
+            Icons.phone,
+            11,
+          ),
           const SizedBox(height: 24),
           _buildLoginButton(),
         ],
@@ -197,23 +256,50 @@ class _LoginScreenState extends State<LoginScreen> {
     return Container(
       padding: const EdgeInsets.all(10),
       margin: const EdgeInsets.only(bottom: 16),
-      decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
-      child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade700, fontSize: 12)),
+      decoration: BoxDecoration(
+        color: Colors.red.shade50,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        _errorMessage!,
+        style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+      ),
     );
   }
 
-  Widget _buildField(TextEditingController controller, FocusNode focusNode, String label, IconData icon, int length) {
+  Widget _buildField(
+    TextEditingController controller,
+    FocusNode focusNode,
+    String label,
+    IconData icon,
+    int length, {
+    VoidCallback? onScan,
+  }) {
     return TextFormField(
       controller: controller,
       focusNode: focusNode,
       keyboardType: TextInputType.number,
-      inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(length)],
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(length),
+      ],
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icon, color: const Color(0xFF1A6FB0)),
+        suffixIcon: onScan != null
+            ? IconButton(
+                icon: const Icon(
+                  Icons.qr_code_scanner,
+                  color: Color(0xFF1A6FB0),
+                ),
+                onPressed: onScan,
+              )
+            : null,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
       ),
-      validator: (val) => val == null || val.isEmpty ? 'Required' : (val.length < length ? 'Invalid' : null),
+      validator: (val) => val == null || val.isEmpty
+          ? 'Required'
+          : (val.length < length ? 'Invalid' : null),
     );
   }
 
@@ -225,11 +311,130 @@ class _LoginScreenState extends State<LoginScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: const Color(0xFF1A6FB0),
           padding: const EdgeInsets.symmetric(vertical: 16),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
-        child: _isLoading 
-          ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-          : const Text('LOGIN', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        child: _isLoading
+            ? const SizedBox(
+                height: 20,
+                width: 20,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2,
+                ),
+              )
+            : const Text(
+                'LOGIN',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+      ),
+    );
+  }
+}
+
+class BarcodeScannerScreen extends StatefulWidget {
+  const BarcodeScannerScreen({super.key});
+
+  @override
+  State<BarcodeScannerScreen> createState() => _BarcodeScannerScreenState();
+}
+
+class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
+  final MobileScannerController _scannerController = MobileScannerController();
+  String _scannedImei = '';
+
+  @override
+  void dispose() {
+    _scannerController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Scan IMEI Barcode'),
+        actions: [
+          IconButton(
+            tooltip: 'Turn flashlight on or off',
+            icon: const Icon(Icons.flashlight_on),
+            onPressed: () => _scannerController.toggleTorch(),
+          ),
+        ],
+      ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          MobileScanner(
+            controller: _scannerController,
+            onDetect: (capture) {
+              if (_scannedImei.isNotEmpty) return;
+
+              for (final barcode in capture.barcodes) {
+                final rawValue = barcode.rawValue;
+                if (rawValue == null) continue;
+
+                final cleaned = rawValue.replaceAll(RegExp(r'[^0-9]'), '');
+                if (cleaned.length >= 15) {
+                  setState(() => _scannedImei = cleaned.substring(0, 15));
+                  _scannerController.stop();
+                  break;
+                }
+              }
+            },
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: SafeArea(
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                color: Colors.black87,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _scannedImei.isEmpty
+                          ? 'IMEI barcode camera-এর মধ্যে রাখুন'
+                          : 'Scanned IMEI: $_scannedImei',
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(context),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(color: Colors.white),
+                            ),
+                            child: const Text('CANCEL'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _scannedImei.isEmpty
+                                ? null
+                                : () => Navigator.pop(context, _scannedImei),
+                            icon: const Icon(Icons.check),
+                            label: const Text('OK'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

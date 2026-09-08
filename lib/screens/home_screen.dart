@@ -24,7 +24,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // ✅ সার্ভিস লিসেনার যুক্ত করা
     DeviceControlService.instance.addListener(_onServiceChange);
     _checkAdminStatus();
     _getRealDeviceInfo();
@@ -41,10 +40,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       final service = DeviceControlService.instance;
       if (service.isLocked) {
-        // ✅ ডিভাইস লক হলে সব রুট মুছে সরাসরি LockScreen এ পাঠিয়ে দিবে
         Navigator.pushNamedAndRemoveUntil(
-          context, 
-          RouteName.lockScreen, 
+          context,
+          RouteName.lockScreen,
           (route) => false,
         );
       }
@@ -55,8 +53,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final isLocked = await DeviceControlService.instance.isDeviceLocked();
     if (isLocked && mounted) {
       Navigator.pushNamedAndRemoveUntil(
-        context, 
-        RouteName.lockScreen, 
+        context,
+        RouteName.lockScreen,
         (route) => false,
       );
     }
@@ -99,16 +97,50 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       if (result) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('✅ Admin Activated!'), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text('✅ Admin Activated!'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
+    }
+  }
+
+  // ✅ টেস্টিংয়ের জন্য অ্যাপ ম্যানেজমেন্ট রিমুভ ও আনইনস্টল করা
+  Future<void> _removeAndUninstall() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Uninstall App?'),
+        content: const Text(
+          'This will disable Device Owner and open the Uninstall screen. Only use this for Testing.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('UNINSTALL'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      setState(() => _isLoading = true);
+      // নেটিভ সাইডে ম্যানেজমেন্ট রিমুভ করবে এবং সরাসরি আনইনস্টল ডায়ালগ খুলবে
+      await DeviceControlService.instance.removeManagement();
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: false, // ব্যাক বাটন দিয়ে অ্যাপ থেকে বের হওয়া বন্ধ
+      canPop: false,
       child: Scaffold(
         backgroundColor: const Color(0xFFF5F7FA),
         appBar: AppBar(
@@ -126,12 +158,34 @@ class _HomeScreenState extends State<HomeScreen> {
                 _buildAdminStatus(),
                 const SizedBox(height: 16),
                 _buildInfoCard(),
-                const SizedBox(height: 24),
+                const SizedBox(height: 30),
                 const Text(
                   'This device is currently monitored by admin.\nIf you fail to pay EMI, the device will be blocked.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey, fontSize: 12),
                 ),
+                const SizedBox(height: 60),
+
+                // ✅ আনইনস্টল বাটন (টেস্টিং এর জন্য)
+                if (!_isLoading)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _removeAndUninstall,
+                      icon: const Icon(Icons.delete_forever),
+                      label: const Text('UNINSTALL APP (DEBUG)'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.shade800,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  const CircularProgressIndicator(color: Colors.red),
               ],
             ),
           ),
@@ -146,20 +200,37 @@ class _HomeScreenState extends State<HomeScreen> {
       decoration: BoxDecoration(
         color: _isAdminActive ? Colors.green.shade50 : Colors.orange.shade50,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _isAdminActive ? Colors.green.shade300 : Colors.orange.shade300),
+        border: Border.all(
+          color: _isAdminActive
+              ? Colors.green.shade300
+              : Colors.orange.shade300,
+        ),
       ),
       child: Row(
         children: [
-          Icon(_isAdminActive ? Icons.check_circle : Icons.warning, color: _isAdminActive ? Colors.green : Colors.orange),
+          Icon(
+            _isAdminActive ? Icons.check_circle : Icons.warning,
+            color: _isAdminActive ? Colors.green : Colors.orange,
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              _isAdminActive ? 'Device security is active' : 'Security activation required!',
-              style: TextStyle(fontWeight: FontWeight.bold, color: _isAdminActive ? Colors.green.shade800 : Colors.orange.shade800),
+              _isAdminActive
+                  ? 'Device security is active'
+                  : 'Security activation required!',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: _isAdminActive
+                    ? Colors.green.shade800
+                    : Colors.orange.shade800,
+              ),
             ),
           ),
           if (!_isAdminActive)
-            ElevatedButton(onPressed: _activateAdmin, child: const Text('Activate')),
+            ElevatedButton(
+              onPressed: _activateAdmin,
+              child: const Text('Activate'),
+            ),
         ],
       ),
     );
@@ -167,6 +238,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildInfoCard() {
     return Card(
+      elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(16),

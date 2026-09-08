@@ -16,7 +16,7 @@ void main() async {
 
   // SharedPreferences initialization
   await SharedPreferencesService.init();
-  
+
   // Device Control Service initialization (Singleton instance)
   await DeviceControlService.instance.init();
 
@@ -30,7 +30,6 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        // Singleton instance ব্যবহার করা হচ্ছে যাতে সব স্টেট সিঙ্ক থাকে
         ChangeNotifierProvider.value(value: DeviceControlService.instance),
       ],
       child: ScreenUtilInit(
@@ -40,13 +39,9 @@ class MyApp extends StatelessWidget {
         builder: (context, child) {
           return Consumer<DeviceControlService>(
             builder: (context, service, _) {
-              // ১. প্রয়োজনীয় স্ট্যাটাস চেক করা
               final String imei = SharedPreferencesService.getIMEI();
               final bool isLoggedIn = imei.isNotEmpty;
               final bool isLocked = service.isLocked;
-
-              // ২. সরাসরি সঠিক স্ক্রিনটি নির্ধারণ করা (রিয়েল-টাইম আপডেট হবে)
-              // একবার লগইন হলে (imei থাকলে) সে আর কখনো LoginScreen দেখবে না
               Widget startScreen;
               if (isLocked) {
                 startScreen = const LockScreen();
@@ -57,7 +52,7 @@ class MyApp extends StatelessWidget {
               }
 
               return MaterialApp(
-                key: ValueKey("$isLocked-$isLoggedIn"), // স্ট্যাটাস চেঞ্জ হলে UI রিফ্রেশ নিশ্চিত করতে
+                key: ValueKey("$isLocked-$isLoggedIn"),
                 debugShowCheckedModeBanner: false,
                 home: startScreen,
                 routes: AppRoutes.routes,
@@ -71,11 +66,14 @@ class MyApp extends StatelessWidget {
                             const Text('Navigation Error'),
                             const SizedBox(height: 20),
                             ElevatedButton(
-                              onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                                context, 
-                                isLoggedIn ? RouteName.homeScreen : RouteName.loginScreen,
-                                (route) => false
-                              ),
+                              onPressed: () =>
+                                  Navigator.pushNamedAndRemoveUntil(
+                                    context,
+                                    isLoggedIn
+                                        ? RouteName.homeScreen
+                                        : RouteName.loginScreen,
+                                    (route) => false,
+                                  ),
                               child: const Text('Back to App'),
                             ),
                           ],

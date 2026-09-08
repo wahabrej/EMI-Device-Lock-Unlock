@@ -7,13 +7,17 @@ import 'package:flutter/foundation.dart';
 class ApiService {
   static const String baseUrl = 'https://api.smartpay.click/apk';
 
-  Future<Map<String, dynamic>?> trackDevice(Map<String, dynamic> deviceData) async {
+  Future<Map<String, dynamic>?> trackDevice(
+    Map<String, dynamic> deviceData,
+  ) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/devices/track'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(deviceData),
-      ).timeout(const Duration(seconds: 15));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/devices/track'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(deviceData),
+          )
+          .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         return jsonDecode(response.body);
@@ -27,10 +31,12 @@ class ApiService {
 
   Future<Map<String, dynamic>?> getLockStatus(String imei) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/devices/$imei/lock-status'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl/devices/$imei/lock-status'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
