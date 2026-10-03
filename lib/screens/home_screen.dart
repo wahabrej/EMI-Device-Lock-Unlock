@@ -106,7 +106,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ✅ টেস্টিংয়ের জন্য অ্যাপ ম্যানেজমেন্ট রিমুভ ও আনইনস্টল করা
   Future<void> _removeAndUninstall() async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -131,7 +130,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (confirm == true) {
       setState(() => _isLoading = true);
-      // নেটিভ সাইডে ম্যানেজমেন্ট রিমুভ করবে এবং সরাসরি আনইনস্টল ডায়ালগ খুলবে
       await DeviceControlService.instance.removeManagement();
       if (mounted) setState(() => _isLoading = false);
     }
@@ -166,7 +164,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 60),
 
-                // ✅ আনইনস্টল বাটন (টেস্টিং এর জন্য)
                 if (!_isLoading)
                   SizedBox(
                     width: double.infinity,
